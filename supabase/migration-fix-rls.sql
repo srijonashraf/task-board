@@ -1,17 +1,52 @@
 -- ─────────────────────────────────────────────
--- ENABLE RLS ON ALL TABLES
+-- MIGRATION: Fix infinite recursion in RLS policies
+--
+-- The original policies on boards, board_members,
+-- columns, and cards used direct sub-queries on
+-- board_members which triggered the board_members
+-- SELECT policy recursively. This migration drops
+-- those policies and recreates them using the
+-- get_user_role() SECURITY DEFINER function which
+-- bypasses RLS and breaks the recursion.
+--
+-- It also fixes the members_insert policy to allow
+-- board owners to add themselves as the first member.
+--
+-- Run this in the Supabase SQL Editor AFTER the
+-- initial schema.sql and policies.sql have been run.
+-- If you haven't run policies.sql yet, use the updated
+-- policies.sql instead and skip this migration.
 -- ─────────────────────────────────────────────
-alter table public.boards       enable row level security;
-alter table public.board_members enable row level security;
-alter table public.columns      enable row level security;
-alter table public.cards        enable row level security;
-alter table public.invites      enable row level security;
-alter table public.audit_log    enable row level security;
+
+-- Drop all existing policies
+drop policy if exists "boards_select" on public.boards;
+drop policy if exists "boards_insert" on public.boards;
+drop policy if exists "boards_update" on public.boards;
+drop policy if exists "boards_delete" on public.boards;
+
+drop policy if exists "members_select" on public.board_members;
+drop policy if exists "members_insert" on public.board_members;
+drop policy if exists "members_update" on public.board_members;
+drop policy if exists "members_delete" on public.board_members;
+
+drop policy if exists "columns_select" on public.columns;
+drop policy if exists "columns_insert" on public.columns;
+drop policy if exists "columns_update" on public.columns;
+drop policy if exists "columns_delete" on public.columns;
+
+drop policy if exists "cards_select" on public.cards;
+drop policy if exists "cards_insert" on public.cards;
+drop policy if exists "cards_update" on public.cards;
+drop policy if exists "cards_delete" on public.cards;
+
+drop policy if exists "invites_select" on public.invites;
+drop policy if exists "invites_insert" on public.invites;
+drop policy if exists "invites_update" on public.invites;
+
+drop policy if exists "audit_select" on public.audit_log;
 
 -- ─────────────────────────────────────────────
--- BOARDS
--- Uses get_user_role (SECURITY DEFINER) to avoid
--- recursive RLS on board_members.
+-- BOARDS — use get_user_role (SECURITY DEFINER)
 -- ─────────────────────────────────────────────
 create policy "boards_select" on public.boards
   for select using (
@@ -30,10 +65,7 @@ create policy "boards_delete" on public.boards
   for delete using (owner_id = auth.uid());
 
 -- ─────────────────────────────────────────────
--- BOARD_MEMBERS
--- All checks go through get_user_role (SECURITY
--- DEFINER) so the sub-query on board_members
--- never triggers RLS again.
+-- BOARD_MEMBERS — use get_user_role + owner check
 -- ─────────────────────────────────────────────
 create policy "members_select" on public.board_members
   for select using (
@@ -42,15 +74,12 @@ create policy "members_select" on public.board_members
 
 create policy "members_insert" on public.board_members
   for insert with check (
-    -- Board owner can always add themselves (first member)
     (user_id = auth.uid() and exists (
       select 1 from public.boards where id = board_id and owner_id = auth.uid()
     ))
     or
-    -- Existing admin/owner can add members
     public.get_user_role(board_id, auth.uid()) in ('owner', 'admin')
     or
-    -- User can join via a valid invite
     (user_id = auth.uid() and exists (
       select 1 from public.invites
       where invites.board_id = board_members.board_id
@@ -73,7 +102,7 @@ create policy "members_delete" on public.board_members
   );
 
 -- ─────────────────────────────────────────────
--- COLUMNS
+-- COLUMNS — use get_user_role
 -- ─────────────────────────────────────────────
 create policy "columns_select" on public.columns
   for select using (
@@ -96,7 +125,7 @@ create policy "columns_delete" on public.columns
   );
 
 -- ─────────────────────────────────────────────
--- CARDS
+-- CARDS — use get_user_role
 -- ─────────────────────────────────────────────
 create policy "cards_select" on public.cards
   for select using (
